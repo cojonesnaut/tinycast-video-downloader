@@ -75,8 +75,8 @@ var import_node_os = require("node:os");
 var import_node_path = __toESM(require("node:path"), 1);
 var CARD_WIDTH = 720;
 var CARD_HEIGHT = 108;
-var SAMPLE_WIDTH = 480;
-var SAMPLE_HEIGHT = 72;
+var SAMPLE_WIDTH = 360;
+var SAMPLE_HEIGHT = 54;
 function dimPixels(rgb, appearance) {
   const out = new Uint8Array(rgb.length);
   for (let i = 0; i < rgb.length; i++) out[i] = appearance === "light" ? Math.round(0.25 * rgb[i] + 0.75 * 242) : Math.round(rgb[i] * 0.33);
@@ -85,7 +85,7 @@ function dimPixels(rgb, appearance) {
 function thumbnailPaths(rgb, width = SAMPLE_WIDTH, height = SAMPLE_HEIGHT) {
   if (rgb.length !== width * height * 3) throw new Error("Invalid thumbnail pixels");
   const colors = /* @__PURE__ */ new Map();
-  const colorAt = (pixel) => [0, 1, 2].map((c) => (rgb[pixel * 3 + c] & 252).toString(16).padStart(2, "0")).join("");
+  const colorAt = (pixel) => [0, 1, 2].map((c) => (rgb[pixel * 3 + c] & 248).toString(16).padStart(2, "0")).join("");
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; ) {
       const start = x, color = colorAt(y * width + x++);
@@ -610,14 +610,16 @@ ${e.stderr ?? e.message ?? ""}`);
   }
   function watch(job) {
     return new Promise((resolve) => {
-      let last = "", ticks = 0, checking = false, deadSince = 0;
+      let last = "", shownAt = 0, shownPhase = "", ticks = 0, checking = false, deadSince = 0;
       const timer = setInterval(async () => {
         const state = controlState(job);
         setPaused(state === "paused");
         if (state === "running") {
           const next = parseProgress(readLog(job));
-          if (next && JSON.stringify(next) !== last) {
+          if (next && JSON.stringify(next) !== last && (next.phase !== shownPhase || Date.now() - shownAt >= 1e3)) {
             last = JSON.stringify(next);
+            shownAt = Date.now();
+            shownPhase = next.phase;
             setProgress(next);
             if (next.resolution && /^\d+x\d+$/.test(next.resolution)) setVideoSize(next.resolution);
             setStatus(next.phase === "processing" ? "Finishing the file\u2026" : "Downloading\u2026 You can close this command and reopen it to see progress.");

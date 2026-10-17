@@ -168,14 +168,16 @@ export default function TinycastDownloader() {
   // when the supervisor disappeared and the result has to be read from the log.
   function watch(job: Job) {
     return new Promise<number | undefined>(resolve => {
-      let last = "", ticks = 0, checking = false, deadSince = 0;
+      // Tinycast re-decodes the whole card SVG on every update (~50 ms), so redraw it
+      // at most once a second; phase changes (paused, processing…) show at once.
+      let last = "", shownAt = 0, shownPhase = "", ticks = 0, checking = false, deadSince = 0;
       const timer = setInterval(async () => {
         const state = controlState(job);
         setPaused(state === "paused");
         if (state === "running") {
           const next = parseProgress(readLog(job));
-          if (next && JSON.stringify(next) !== last) {
-            last = JSON.stringify(next); setProgress(next);
+          if (next && JSON.stringify(next) !== last && (next.phase !== shownPhase || Date.now() - shownAt >= 1000)) {
+            last = JSON.stringify(next); shownAt = Date.now(); shownPhase = next.phase; setProgress(next);
             if (next.resolution && /^\d+x\d+$/.test(next.resolution)) setVideoSize(next.resolution);
             setStatus(next.phase === "processing" ? "Finishing the file…" : "Downloading… You can close this command and reopen it to see progress.");
           }

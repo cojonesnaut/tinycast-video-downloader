@@ -4,11 +4,12 @@ import path from "node:path";
 import { execa } from "./tinycast-execa";
 
 // Like Downie, the thumbnail fills the whole 720×108 card behind the text, dimmed.
-// It is sampled at 480×72 (1.5 pixels per 2.25 units) and dimmed before encoding:
+// It is sampled at 360×54 (one pixel per 2 units; the dimmed background looks the same
+// as at 480×72 but the card SVG is less than half the size) and dimmed before encoding:
 // a dark card keeps a third of the brightness (as Downie does), a light card is
 // washed towards white. Dimming narrows the colour range, which keeps runs long.
 const CARD_WIDTH = 720, CARD_HEIGHT = 108;
-const SAMPLE_WIDTH = 480, SAMPLE_HEIGHT = 72;
+const SAMPLE_WIDTH = 360, SAMPLE_HEIGHT = 54;
 
 export function dimPixels(rgb: Uint8Array, appearance?: string) {
   const out = new Uint8Array(rgb.length);
@@ -22,7 +23,7 @@ export function dimPixels(rgb: Uint8Array, appearance?: string) {
 export function thumbnailPaths(rgb: Uint8Array, width = SAMPLE_WIDTH, height = SAMPLE_HEIGHT) {
   if (rgb.length !== width * height * 3) throw new Error("Invalid thumbnail pixels");
   const colors = new Map<string, string[]>();
-  const colorAt = (pixel: number) => [0, 1, 2].map(c => (rgb[pixel * 3 + c] & 0xfc).toString(16).padStart(2, "0")).join("");
+  const colorAt = (pixel: number) => [0, 1, 2].map(c => (rgb[pixel * 3 + c] & 0xf8).toString(16).padStart(2, "0")).join("");
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width;) {
       const start = x, color = colorAt(y * width + x++);
