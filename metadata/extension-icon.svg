@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="9"/></filter>
+    <filter id="glowSoft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="5"/></filter>
+    <filter id="glowArrow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="10"/></filter>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="0.3">
+      <stop offset="0" stop-color="#C45CFF"/><stop offset="0.6" stop-color="#9A4DFF"/><stop offset="1" stop-color="#4F8BFF"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3A1468"/><stop offset="1" stop-color="#1E0939"/>
+    </linearGradient>
+    <linearGradient id="slab" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8E3BEA"/><stop offset="1" stop-color="#4A5BE8"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E58CFF"/><stop offset="0.45" stop-color="#A23BF2"/><stop offset="1" stop-color="#5A17C9"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0.8" y2="0.9">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.42"/><stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.12"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="play" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FBE6FF"/><stop offset="0.55" stop-color="#D08BFF"/><stop offset="1" stop-color="#9A3CF0"/>
+    </linearGradient>
+    <linearGradient id="arrow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#C9F6FF"/><stop offset="0.55" stop-color="#F4FEFF"/><stop offset="1" stop-color="#7FE6FF"/>
+    </linearGradient>
+    <clipPath id="screenClip"><rect x="78" y="136" width="330" height="224" rx="62"/></clipPath>
+  </defs>
+  <rect x="31.0" y="31.0" width="450" height="450" rx="104" fill="none" stroke="url(#rim)" stroke-width="18" opacity="0.9" filter="url(#glow)"/>
+  <rect x="31.0" y="43.0" width="450" height="438" rx="104" fill="url(#slab)"/>
+  <rect x="31.0" y="31.0" width="450" height="438" rx="104" fill="url(#body)"/>
+  <rect x="33.0" y="33.0" width="446" height="434" rx="102" fill="none" stroke="url(#rim)" stroke-width="4"/>
+  <path d="M137.0 34.0 H375.0" stroke="#F3D6FF" stroke-width="3" stroke-linecap="round" opacity="0.9"/>
+  <g transform="translate(9.00 -13.00)">
+  <!-- glossy play-button screen -->
+  <rect x="78" y="136" width="330" height="224" rx="62" fill="none" stroke="#B85CFF" stroke-width="10" opacity="0.8" filter="url(#glowSoft)"/>
+  <rect x="70" y="128" width="346" height="240" rx="70" fill="none" stroke="#A457F5" stroke-width="3" opacity="0.7"/>
+  <rect x="78" y="136" width="330" height="224" rx="62" fill="url(#screen)"/>
+  <g clip-path="url(#screenClip)">
+    <path d="M78 136 H330 L186 360 H78 Z" fill="url(#gloss)"/>
+    <path d="M296 136 H408 V226 Z" fill="#FFFFFF" opacity="0.10"/>
+  </g>
+  <rect x="88" y="146" width="310" height="204" rx="54" fill="none" stroke="#FFFFFF" stroke-opacity="0.28" stroke-width="2.5"/>
+  <rect x="79.5" y="137.5" width="327" height="221" rx="60.5" fill="none" stroke="#F0C8FF" stroke-opacity="0.75" stroke-width="3"/>
+
+  <!-- play triangle with a dark outline -->
+  <path d="M190 196 L190 300 L278 248 Z" fill="none" stroke="#2A0A4E" stroke-width="16" stroke-linejoin="round"/>
+  <path d="M190 196 L190 300 L278 248 Z" fill="url(#play)" stroke="#F5DBFF" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- glowing download arrow, cut out with a dark outline -->
+  <path d="M328 178 H372 V306 H418 L350 392 L282 306 H328 Z" fill="#2F7BFF" opacity="0.55" stroke="#2F7BFF" stroke-width="18" filter="url(#glowArrow)"/>
+  <path d="M328 178 H372 V306 H418 L350 392 L282 306 H328 Z" fill="#33D7FF" opacity="0.9" filter="url(#glowSoft)"/>
+  <path d="M328 178 H372 V306 H418 L350 392 L282 306 H328 Z" fill="none" stroke="#1A0733" stroke-width="16" stroke-linejoin="round"/>
+  <path d="M328 178 H372 V306 H418 L350 392 L282 306 H328 Z" fill="url(#arrow)" stroke="#9FF0FF" stroke-width="3" stroke-linejoin="round"/>
+  </g>
+</svg>
