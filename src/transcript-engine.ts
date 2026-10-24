@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { execa } from "./tinycast-execa";
+import { execa } from "./tinycast-execa.js";
 
 export type TranscriptPreferences = { ytdlPath?: string; ffmpegPath?: string; downloadPath?: string; cookiesFromBrowser?: string; forceIpv4?: boolean };
 export type Track = { id: string; code: string; name: string; automatic: boolean };
@@ -49,11 +49,12 @@ export async function loadCaptionVideo(url: string, prefs: TranscriptPreferences
     catch { throw original; }
   }
 }
+const entities: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
 function clean(text: string) {
   return text.replace(/<[^>]*>/g, "").replace(/\{\\[^}]*\}/g, "").replace(/&#(x[\da-f]+|\d+);/gi, (full, value) => {
     const n = value[0].toLowerCase() === "x" ? parseInt(value.slice(1), 16) : Number(value);
     return n >= 0 && n <= 0x10ffff ? String.fromCodePoint(n) : full;
-  }).replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_, entity) => ({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " }[entity] || "")).replace(/\s+/g, " ").trim();
+  }).replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_, entity: string) => entities[entity] || "").replace(/\s+/g, " ").trim();
 }
 export function parseSrt(source: string): Cue[] {
   const cues: Cue[] = []; let previous: string[] = [];

@@ -1,426 +1,323 @@
-import { spawn } from "node:child_process";
-import fs from "node:fs";
+import { Action, ActionPanel, Clipboard, Form, Icon, closeMainWindow, getPreferenceValues, showInFinder, openExtensionPreferences } from "@raycast/api";
+import { useEffect, useRef, useState } from "react";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import {
-  Action,
-  ActionPanel,
-  Clipboard,
-  Form,
-  Icon,
-  getPreferenceValues,
-  getSelectedText,
-  open,
-  showHUD,
-  showToast,
-  Toast,
-  useNavigation,
-} from "@raycast/api";
-import { useEffect, useMemo, useState } from "react";
-import { useForm, usePromise } from "@raycast/utils";
-import { execa } from "execa";
-import {
-  DownloadOptions,
-  getffmpegPath,
-  getffprobePath,
-  getFormats,
-  getFormatTitle,
-  getFormatValue,
-  getytdlPath,
-  getCommonArgs,
-  copyToClipboardAction,
-  describeYtdlpError,
-  looksLikeFilePath,
-  hasPlaylist,
-  isMac,
-  isValidHHMM,
-  isValidUrl,
-  parseHHMM,
-  sanitizeVideoTitle,
-} from "./utils.js";
-import { Video } from "./types.js";
-import { MP3_FORMAT_ID } from "./utils.js";
-import Installer from "./views/installer.js";
-import Updater from "./views/updater.js";
+import { execa } from "./tinycast-execa.js";
 
-const { downloadPath, autoLoadUrlFromClipboard, autoLoadUrlFromSelectedText } = getPreferenceValues<ExtensionPreferences>();
+import { downloadSupervisor } from "./download-control.js";
+import { controlState, createJob, exitCode, isAlive, readLog, runningJobs, signal, updateJob, type Job, type JobInfo } from "./tinycast-jobs.js";
+import { audioTracks, formatArgs, formatLabel, formats, qualityLabel, resolutions, validLanguage } from "./tinycast-formats.js";
+import { cookieFailure, describeCookieCheck, privacySettingsUrl, withoutCookies, type CookieCheck } from "./tinycast-cookies.js";
+import { decimalSeparator, parseProgress, plannedFile, printedTitle, type Progress } from "./tinycast-progress.js";
+import { DownloadingPanel, FinishedDetail } from "./tinycast-download-view.js";
+import { accentColor } from "./tinycast-panel.js";
 
-export default function DownloadVideo() {
-  const { push } = useNavigation();
-  const [error, setError] = useState(0);
-  const [warning, setWarning] = useState("");
+type Preferences = { downloadPath?: string; ytdlPath?: string; ffmpegPath?: string; ffprobePath?: string; forceIpv4?: boolean; cookiesFromBrowser?: string; autoLoadUrlFromClipboard?: boolean };
+type Metadata = { title?: string; duration?: number; live_status?: string; formats?: Parameters<typeof audioTracks>[0] };
+const prefs = getPreferenceValues<Preferences>();
+const expand = (value: string) => value.replace(/^~(?=\/|$)/, homedir());
+function executable(name: string, preference?: string) {
+  const candidates = [preference && expand(preference.trim()), `/opt/homebrew/bin/${name}`, `/usr/local/bin/${name}`, ...String(process.env.PATH || "").split(":").filter(Boolean).map(p => path.join(p, name))];
+  const found = candidates.find(p => p && existsSync(p));
+  if (!found) throw new Error(`${name} was not found. Set its full path in extension preferences (run “which ${name}” in Terminal).`);
+  return found;
+}
+function tools() {
+  return { ytdlp: executable("yt-dlp", prefs.ytdlPath), ffmpeg: executable("ffmpeg", prefs.ffmpegPath), ffprobe: executable("ffprobe", prefs.ffprobePath) };
+}
+function environment() {
+  return { ...process.env, PATH: ["/opt/homebrew/bin", "/usr/local/bin", process.env.PATH, "/usr/bin", "/bin"].filter(Boolean).join(":"), PYTHONUNBUFFERED: "1" };
+}
+function common() {
+  const args = ["--ignore-config", "--socket-timeout", "20", "--retries", "1", "--extractor-retries", "1"];
+  if (prefs.forceIpv4) args.push("--force-ipv4");
+  if (prefs.cookiesFromBrowser && prefs.cookiesFromBrowser !== "none") args.push("--cookies-from-browser", prefs.cookiesFromBrowser);
+  return args;
+}
+function valid(value: string) {
+  try { return ["https:", "http:"].includes(new URL(value.trim()).protocol); } catch { return false; }
+}
+function details(error: unknown) {
+  const e = error as { stderr?: string; message?: string };
+  return e.stderr?.trim() || e.message || String(error);
+}
 
-  const ytdlPath = useMemo(() => getytdlPath(), [error]);
-  const ffmpegPath = useMemo(() => getffmpegPath(), [error]);
-  const ffprobePath = useMemo(() => getffprobePath(), [error]);
-
-  const { handleSubmit, values, itemProps, setValue, setValidationError } = useForm<DownloadOptions>({
-    initialValues: {
-      url: "",
-    },
-    onSubmit: async (values) => {
-      if (!values.format) return;
-      const options = ["-o", path.join(downloadPath, `${video?.title || "video"} (%(id)s).%(ext)s`)];
-      const [downloadFormat, recodeFormat] = values.format.split("#");
-
-      // `medium` ("Audio"/"Video") is derived at component scope from the selected
-      // format and reused here for the progress toasts below.
-
-      // The metadata preview is always for the single video, so default to
-      // --no-playlist; only pull the whole list when the user opted in via the
-      // "Download entire playlist" checkbox (shown only for playlist URLs).
-      options.push(values.downloadPlaylist ? "--yes-playlist" : "--no-playlist");
-
-      options.push("--ffmpeg-location", ffmpegPath);
-
-      if (values.format === MP3_FORMAT_ID) {
-        options.push("--extract-audio");
-        options.push("--audio-format", "mp3");
-        options.push("--audio-quality", "0");
-      } else {
-        options.push("--format", downloadFormat);
-        options.push("--recode-video", recodeFormat);
-      }
-
-      const toast = await showToast({
-        title: `Downloading ${medium}`,
-        style: Toast.Style.Animated,
-        message: "0%",
-      });
-
-      options.push("--progress");
-      options.push("--print", "after_move:filepath");
-
-      const downloadProcess = spawn(ytdlPath, [...getCommonArgs(), ...options, values.url], {
-        env: { ...globalThis.process.env, PYTHONUNBUFFERED: "1" },
-      });
-
-      let filePath = "";
-      // Accumulate the full stderr stream so a failure can surface complete logs
-      // via "Copy Logs". `lastErrorLine` is the most useful single line to show
-      // in the toast body when the download fails.
-      const logLines: string[] = [];
-      let lastErrorLine = "";
-
-      downloadProcess.stdout.on("data", (data) => {
-        const line = data.toString() as string;
-
-        const progress = Number(/\[download\]\s+(\d+(\.\d+)?)%.*/.exec(line)?.[1]);
-        if (progress) {
-          const currentProgress = Number(toast.message?.replace("%", ""));
-
-          if (progress < currentProgress) {
-            toast.title = `Formatting ${medium}`;
-          }
-          toast.message = `${Math.floor(progress)}%`;
-        }
-
-        if (looksLikeFilePath(line)) {
-          filePath = line.trim();
-        }
-      });
-
-      downloadProcess.stderr.on("data", (data) => {
-        const line = data.toString();
-        logLines.push(line);
-
-        // Surface warnings inline, and remember the last error line for the
-        // failure toast — but do NOT touch toast.message here: the running toast
-        // is reserved for download progress (stderr would otherwise clobber it
-        // on every chunk). The exit code in `close` is the real failure verdict.
-        if (line.startsWith("WARNING:")) {
-          setWarning(line);
-        }
-        if (line.startsWith("ERROR:")) {
-          lastErrorLine = line.trim();
-        }
-      });
-
-      downloadProcess.on("close", (code) => {
-        // The exit code is the sole success/failure verdict: 0 is success,
-        // anything else (including null, i.e. killed by a signal) is a failure.
-        if (code !== 0) {
-          const reason = code === null ? "yt-dlp was terminated" : `yt-dlp exited with code ${code}`;
-          toast.title = "Download Failed";
-          toast.style = Toast.Style.Failure;
-          toast.message = lastErrorLine || reason;
-
-          const logs = logLines.join("").trim() || reason;
-          toast.primaryAction = copyToClipboardAction("Copy Logs", logs, "Copied Logs to Clipboard");
-
-          // If a file actually landed on disk before the non-zero exit (e.g. a
-          // non-fatal postprocessor failure), still let the user open it.
-          if (filePath) {
-            toast.secondaryAction = {
-              title: isMac ? "Open in Finder" : "Open in Explorer",
-              shortcut: { modifiers: ["cmd", "shift"], key: "o" },
-              onAction: () => {
-                open(path.dirname(filePath));
-              },
-            };
-          } else {
-            // "Bad guest token" and similar extractor failures are often resolved
-            // by a newer yt-dlp, so offer a one-key jump to the update view.
-            toast.secondaryAction = {
-              title: "Update Libraries",
-              shortcut: { modifiers: ["cmd", "shift"], key: "u" },
-              onAction: () => {
-                push(<Updater />);
-              },
-            };
-          }
-          return;
-        }
-
-        toast.title = `${medium} Downloaded`;
-        toast.style = Toast.Style.Success;
-        toast.message = video?.title;
-
-        if (filePath) {
-          toast.primaryAction = {
-            title: isMac ? "Open in Finder" : "Open in Explorer",
-            shortcut: { modifiers: ["cmd", "shift"], key: "o" },
-            onAction: () => {
-              open(path.dirname(filePath));
-            },
-          };
-          toast.secondaryAction = {
-            title: "Copy to Clipboard",
-            shortcut: { modifiers: ["cmd", "shift"], key: "c" },
-            onAction: () => {
-              Clipboard.copy({ file: filePath });
-              showHUD("Copied to Clipboard");
-            },
-          };
-        }
-      });
-    },
-    validation: {
-      url: (value) => {
-        if (!value) {
-          return "URL is required";
-        }
-        if (!isValidUrl(value)) {
-          return "Invalid URL";
-        }
-      },
-      startTime: (value) => {
-        if (value) {
-          if (!isValidHHMM(value)) {
-            return "Invalid time format";
-          }
-        }
-      },
-      endTime: (value) => {
-        if (value) {
-          if (!isValidHHMM(value)) {
-            return "Invalid time format";
-          }
-          if (video && parseHHMM(value) > video?.duration) {
-            return "End time is greater than video duration";
-          }
-        }
-      },
-    },
-  });
-
-  const {
-    data: video,
-    isLoading,
-    error: videoError,
-    revalidate,
-  } = usePromise(
-    async (url: string) => {
-      if (!url) return;
-      if (!isValidUrl(url)) return;
-
-      const result = await execa(
-        ytdlPath,
-        [...getCommonArgs({ throttle: true }), "--no-playlist", "--dump-json", "--format-sort=res,ext,tbr", url],
-        {
-          env: {
-            ...process.env,
-            PYTHONUNBUFFERED: "1",
-          },
-        },
-      );
-      const data = JSON.parse(result.stdout) as Video;
-
-      return { ...data, title: sanitizeVideoTitle(data.title) };
-    },
-    [values.url],
-    {
-      onError(error) {
-        const friendly = describeYtdlpError(error);
-        // "Try Again" is the primary action only when retrying could help
-        // (transient/rate-limit failures); for an unsupported or unavailable
-        // URL it would be misleading, so Copy Logs leads instead. Copy Logs
-        // always copies the full raw error for debugging, not the summary.
-        const copyLogs = copyToClipboardAction("Copy Logs", error.message, "Copied Logs to Clipboard");
-        showToast({
-          style: Toast.Style.Failure,
-          title: friendly.title,
-          message: friendly.message,
-          primaryAction: friendly.retryable
-            ? {
-                title: "Try Again",
-                shortcut: { modifiers: ["cmd"], key: "r" },
-                onAction: () => {
-                  revalidate();
-                },
-              }
-            : copyLogs,
-          secondaryAction: friendly.retryable ? copyLogs : undefined,
-        });
-      },
-    },
-  );
-
+export default function TinycastDownloader() {
+  const [url, setUrl] = useState("");
+  const [format, setFormat] = useState("mp4");
+  const [resolution, setResolution] = useState("highest");
+  const [audioLanguage, setAudioLanguage] = useState("original");
+  const [playlist, setPlaylist] = useState(false);
+  const [metadata, setMetadata] = useState<Metadata | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [status, setStatus] = useState("Paste a video URL. Press Return to download.");
+  const [error, setError] = useState("");
+  const [cookieNote, setCookieNote] = useState("");
+  const [cookieCheck, setCookieCheck] = useState<CookieCheck | null>(null);
+  const [files, setFiles] = useState<string[]>([]);
+  const [progress, setProgress] = useState<Progress | null>(null);
+  const [retry, setRetry] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [jobInfo, setJobInfo] = useState<JobInfo | null>(null);
+  const [decimal, setDecimal] = useState(".");
+  const [accent, setAccent] = useState<string | undefined>();
+  const [savePath, setSavePath] = useState("");
+  const [finishedAt, setFinishedAt] = useState(new Date());
+  const [closeWhenDone, setCloseWhenDone] = useState(false);
+  // Read when the download ends, which happens inside an async callback.
+  const closeWhenDoneRef = useRef(false);
+  const lastRequest = useRef<Record<string, unknown>>({});
+  // Original, dubbed and auto-dubbed audio tracks of the looked-up video.
+  const languages = audioTracks(metadata?.formats);
   useEffect(() => {
-    if (video) {
-      if (video.live_status !== "not_live" && video.live_status !== undefined) {
-        setValidationError("url", "Live streams are not supported");
-      }
-    }
-  }, [video]);
+    if (audioLanguage !== "original" && !languages.tracks.some(track => track.value === audioLanguage)) setAudioLanguage("original");
+  }, [metadata]);
+  const activeJob = useRef<Job | null>(null);
+  const busy = useRef(false);
+  const edited = useRef(false);
+  const lookupVersion = useRef(0);
 
+  // Numbers follow the user's region ("20,7 MB" where a decimal comma is used), and the
+  // bar the macOS accent colour. Unset accent means blue.
   useEffect(() => {
-    (async () => {
-      if (autoLoadUrlFromClipboard) {
-        const clipboardText = await Clipboard.readText();
-        if (clipboardText && isValidUrl(clipboardText)) {
-          setValue("url", clipboardText);
-          return;
-        }
-      }
-
-      if (autoLoadUrlFromSelectedText) {
-        try {
-          const selectedText = await getSelectedText();
-          if (selectedText && isValidUrl(selectedText)) {
-            setValue("url", selectedText);
-            return;
-          }
-        } catch {
-          // Suppress the error if Raycast didn't find any selected text
-        }
-      }
-    })();
+    void execa("/usr/bin/defaults", ["read", "-g", "AppleLocale"]).then(r => setDecimal(decimalSeparator(r.stdout.trim())), () => {});
+    void execa("/usr/bin/defaults", ["read", "-g", "AppleAccentColor"]).then(r => setAccent(r.stdout.trim()), () => {});
   }, []);
 
-  const missingExecutable = useMemo(() => {
-    if (!fs.existsSync(ytdlPath)) {
-      return "yt-dlp";
+  useEffect(() => {
+    if (prefs.autoLoadUrlFromClipboard) Clipboard.readText().then(text => {
+      if (!edited.current && !busy.current && text && valid(text)) setUrl(text.trim());
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (downloading) return;
+    let cancelled = false;
+    const version = ++lookupVersion.current;
+    setMetadata(null); setError(""); setFiles([]); setCookieNote("");
+    if (!url.trim()) { setLoading(false); setStatus("Paste a video URL. Press Return to download."); return; }
+    if (!valid(url)) { setLoading(false); setStatus("Enter a complete http:// or https:// video URL."); return; }
+    setLoading(true); setStatus("Loading video details… You can also press Return to download now.");
+    const timer = setTimeout(async () => {
+      try {
+        const { ytdlp } = tools();
+        const lookupArgs = [...common(), "--no-playlist", "--skip-download", "--dump-single-json", "--", url.trim()];
+        const result = await execa(ytdlp, lookupArgs, { env: environment(), timeout: 90000 }).catch(e => {
+          // Unreadable browser cookies abort yt-dlp; explain why and look up publicly.
+          const note = cookieFailure(details(e), prefs.cookiesFromBrowser);
+          if (!note) throw e;
+          if (!cancelled && version === lookupVersion.current) setCookieNote(`${note} Continuing without cookies.`);
+          return execa(ytdlp, withoutCookies(lookupArgs), { env: environment(), timeout: 90000 });
+        });
+        const info = JSON.parse(result.stdout) as Metadata;
+        if (!cancelled && version === lookupVersion.current) { setMetadata(info); if (!busy.current) setStatus("Ready. Choose a format and press Return to download."); }
+      } catch (e) {
+        if (!cancelled && version === lookupVersion.current && !busy.current) { setError(details(e)); setStatus("Video lookup failed. See the error below, retry, or try Download."); }
+      } finally { if (!cancelled && version === lookupVersion.current) setLoading(false); }
+    }, 500);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [url, retry]);
+
+  useEffect(() => {
+    const job = activeJob.current;
+    if (!job || !metadata?.title || job.info.title || job.info.url !== url.trim()) return;
+    updateJob(job, { title: metadata.title, duration: metadata.duration });
+    setJobInfo(job.info);
+  }, [metadata]);
+
+  // Reads the chosen browser's cookies the same way downloads do, inside Tinycast so
+  // macOS applies Tinycast's permissions, and reports what was found. The temporary
+  // cookie file holds session cookies, so it is deleted straight away.
+  async function checkBrowserCookies() {
+    const browser = prefs.cookiesFromBrowser;
+    if (!browser || browser === "none") {
+      setCookieCheck({ ok: false, message: "Use Cookies from Browser is set to None. Choose your browser in Extension Preferences, then check again." });
+      return;
     }
-    if (!fs.existsSync(ffmpegPath)) {
-      return "ffmpeg";
-    }
-    if (!fs.existsSync(ffprobePath)) {
-      return "ffprobe";
-    }
-    return null;
-  }, [error]);
-
-  const formats = useMemo(() => getFormats(video), [video]);
-
-  // "Audio" when the selected format is audio-only (MP3 via --extract-audio, or a
-  // raw audio stream like M4A/Opus — every "Audio Only" entry has vcodec "none"),
-  // else "Video". Drives both the submit button label and the progress toasts, so
-  // the whole flow agrees on what's being downloaded. MP3_FORMAT_ID is a hardcoded
-  // value with no backing Format in the list, so it's checked explicitly.
-  const medium = useMemo(() => {
-    const selectedFormat = Object.values(formats)
-      .flat()
-      .find((format) => getFormatValue(format) === values.format);
-    const isAudio = values.format === MP3_FORMAT_ID || selectedFormat?.vcodec === "none";
-    return isAudio ? "Audio" : "Video";
-  }, [formats, values.format]);
-
-  // Classify the load error once so the placeholder, the Title row, and the
-  // Try Again action all agree on whether a retry would help.
-  const friendlyError = videoError ? describeYtdlpError(videoError) : null;
-
-  // Friendlier, state-aware placeholder for the Title row. Em dash means "no URL
-  // queried yet". On a retryable error, nudge toward Try Again; otherwise show
-  // the reason (e.g. "Unsupported Site") since retrying won't help.
-  const titlePlaceholder =
-    video?.title ??
-    (friendlyError ? (friendlyError.retryable ? "Couldn't load — press ⌘R to try again" : friendlyError.title) : "—");
-
-  if (missingExecutable) {
-    return <Installer executable={missingExecutable} onRefresh={() => setError(error + 1)} />;
+    setCookieCheck({ ok: true, message: "Checking… If macOS asks Tinycast for Keychain access, choose Always Allow." });
+    const directory = mkdtempSync(path.join(tmpdir(), "tinycast-cookies-"));
+    const file = path.join(directory, "cookies.txt");
+    try {
+      const output = await execa(tools().ytdlp, ["--ignore-config", "--cookies-from-browser", browser, "--cookies", file], { env: environment(), timeout: 120000 })
+        .then(r => `${r.stdout}\n${r.stderr}`, (e: { stdout?: string; stderr?: string; message?: string }) => `${e.stdout ?? ""}\n${e.stderr ?? e.message ?? ""}`);
+      let cookies = "";
+      try { cookies = readFileSync(file, "utf8"); } catch { /* nothing was written */ }
+      setCookieCheck(describeCookieCheck(output, cookies, browser));
+    } catch (e) {
+      setCookieCheck({ ok: false, message: details(e) });
+    } finally { rmSync(directory, { recursive: true, force: true }); }
   }
 
-  return (
-    <Form
-      isLoading={isLoading}
-      actions={
-        <ActionPanel>
-          <ActionPanel.Section>
-            <Action.SubmitForm
-              icon={Icon.Download}
-              title={`Download ${medium}`}
-              onSubmit={(values) => {
-                setWarning("");
-                handleSubmit({ ...values, copyToClipboard: false } as DownloadOptions);
-              }}
-            />
-            {/* Only offer Try Again when revalidating could actually help: a
-                retryable fetch error, or a valid URL that hasn't loaded yet.
-                Invalid URLs (no-op re-query) and non-retryable errors like
-                "Unsupported Site" are excluded. */}
-            {((friendlyError?.retryable ?? false) ||
-              (!video && !isLoading && !videoError && isValidUrl(values.url))) && (
-              <Action
-                icon={Icon.ArrowClockwise}
-                title="Try Again"
-                shortcut={{ modifiers: ["cmd"], key: "r" }}
-                onAction={() => revalidate()}
-              />
-            )}
-          </ActionPanel.Section>
-          <ActionPanel.Section>
-            <Action.Push icon={Icon.Hammer} title="Update Libraries" target={<Updater />} />
-          </ActionPanel.Section>
-        </ActionPanel>
+  function controlDownload(next: "running" | "paused" | "stop") {
+    const job = activeJob.current;
+    if (!job || controlState(job) === "stop") return;
+    try {
+      writeFileSync(job.control, next);
+      // Also signal yt-dlp directly in case the supervisor that started it is gone.
+      void signal(job, next === "paused" ? "STOP" : next === "running" ? "CONT" : "TERM").then(() => next === "stop" ? signal(job, "CONT") : undefined);
+      setPaused(next === "paused"); setStopping(next === "stop");
+      setStatus(next === "paused" ? "Paused — resume or stop using Actions." : next === "stop" ? "Stopping download…" : "Resuming download…");
+    } catch (e) { setError(`Could not control download: ${details(e)}`); }
+  }
+
+  // Follow a job's log until it ends. Resolves with yt-dlp's exit code, or undefined
+  // when the supervisor disappeared and the result has to be read from the log.
+  function watch(job: Job) {
+    return new Promise<number | undefined>(resolve => {
+      // Update the view at most once a second; phase changes (paused, processing…) show at once.
+      let last = "", shownAt = 0, shownPhase = "", ticks = 0, checking = false, deadSince = 0;
+      const timer = setInterval(async () => {
+        const state = controlState(job);
+        setPaused(state === "paused");
+        if (state === "running") {
+          const next = parseProgress(readLog(job));
+          if (next && JSON.stringify(next) !== last && (next.phase !== shownPhase || Date.now() - shownAt >= 1000)) {
+            last = JSON.stringify(next); shownAt = Date.now(); shownPhase = next.phase; setProgress(next);
+            const log = readLog(job), planned = plannedFile(log), title = job.info.title ? undefined : printedTitle(log);
+            if (title) { updateJob(job, { title }); setJobInfo({ ...job.info }); }
+            // yt-dlp names the file before remuxing/converting; show the final extension.
+            if (planned) setSavePath(job.info.format === "MP4" ? planned.replace(/\.[^./]+$/, ".mp4") : job.info.format === "MP3" ? planned.replace(/\.[^./]+$/, ".mp3") : planned);
+            setStatus(next.phase === "processing" ? "Finishing the file…" : "Downloading… You can close this command and reopen it to see progress.");
+          }
+        }
+        const code = exitCode(job);
+        if (code !== undefined) { clearInterval(timer); resolve(code); return; }
+        if (++ticks % 4 || checking) return;
+        checking = true;
+        const alive = await isAlive(job);
+        checking = false;
+        if (alive) deadSince = 0;
+        else if (!deadSince) deadSince = Date.now();
+        else if (Date.now() - deadSince > 1500 && exitCode(job) === undefined) { clearInterval(timer); resolve(undefined); }
+      }, 250);
+    });
+  }
+
+  function finish(job: Job, code: number | undefined) {
+    const log = readLog(job);
+    setFinishedAt(new Date());
+    const saved = log.split(/\r?\n/).flatMap(line => {
+      try { const file = JSON.parse(line); return typeof file === "string" && existsSync(file) ? [file] : []; } catch { return []; }
+    });
+    if (code === 130 || controlState(job) === "stop") {
+      setProgress(previous => ({ ...previous, percent: previous?.percent ?? null, phase: "stopped" }));
+      setError(""); setStatus("Download stopped. Partial files are kept for a later retry.");
+    } else if ((code === 0 || code === undefined) && saved.length) {
+      setProgress({ phase: "complete", percent: 100, total: saved.reduce((sum, file) => { try { return sum + statSync(file).size; } catch { return sum; } }, 0) });
+      setFiles(saved); setStatus(`Saved ${saved.length} file${saved.length === 1 ? "" : "s"} to ${job.info.directory}`);
+      if (closeWhenDoneRef.current) void closeMainWindow();
+    } else {
+      setProgress(previous => ({ percent: previous?.percent ?? null, phase: "error" }));
+      setError(log || "yt-dlp finished but did not report a saved file."); setStatus("Download failed. The error below explains why.");
+    }
+  }
+
+  // Show a download that is already running (started earlier or from another window).
+  async function follow(job: Job, message: string) {
+    busy.current = true; activeJob.current = job; setJobInfo(job.info); lastRequest.current = job.info.request ?? { url: job.info.url };
+    setLoading(false); setDownloading(true); setError(""); setFiles([]); setStopping(false); setSavePath("");
+    setProgress({ phase: "starting", percent: null }); setStatus(message);
+    try { finish(job, await watch(job)); }
+    finally { activeJob.current = null; setPaused(false); setStopping(false); busy.current = false; setDownloading(false); }
+  }
+
+  useEffect(() => {
+    void runningJobs().then(jobs => {
+      if (jobs[0] && !busy.current) void follow(jobs[0], "This download kept running while the command was closed.");
+    });
+  }, []);
+
+  async function download(values: Record<string, unknown>) {
+    if (busy.current) return;
+    const link = String(values.url ?? url).trim();
+    if (!valid(link)) { setError("Enter a complete http:// or https:// video URL."); return; }
+    busy.current = true; setPaused(false); setStopping(false); setLoading(false); setDownloading(true); setError(""); setFiles([]); setSavePath("");
+    lastRequest.current = { ...values, url: link };
+    setProgress({ phase: "starting", percent: null });
+    setStatus("Preparing download…");
+    try {
+      // Never run the same video twice at once: both runs would write the same .part files.
+      const requested = String(values.audio || audioLanguage || "original");
+      const audio = requested !== "original" && validLanguage(requested) ? requested : "original";
+      // A dubbed download is a different file, so it may run beside the original.
+      const existing = (await runningJobs()).find(job => job.info.url === link && (job.info.audio ?? "original") === audio);
+      if (existing) { busy.current = false; await follow(existing, "This video is already downloading — showing that download."); return; }
+      const bin = tools();
+      const directory = expand(prefs.downloadPath || "~/Downloads");
+      mkdirSync(directory, { recursive: true });
+      const choice = String(values.format || format || "mp4");
+      const quality = String(values.resolution || resolution || "highest");
+      let args = [...common(), values.playlist ?? playlist ? "--yes-playlist" : "--no-playlist", "--ffmpeg-location", path.dirname(bin.ffmpeg), "--newline", "--progress", "--progress-delta", "0.25", "--progress-template", "download:TINYCAST_PROGRESS:%(progress._percent_str)s|%(info.format_id)s|%(info.playlist_index)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(info.resolution)s|%(info.vcodec)s|%(info.ext)s", "--progress-template", "postprocess:TINYCAST_PROCESSING:%(progress.status)s", "--print", "video:TINYCAST_FORMATS:%(requested_formats.:.{format_id,filesize,filesize_approx})j", "--print", "video:TINYCAST_FILE:%(filename)j", "--print", "video:TINYCAST_TITLE:%(title)j", "--print", "after_move:%(filepath)j", "--no-simulate", "-P", directory, "-o", audio === "original" ? "%(title).180B [%(id)s].%(ext)s" : `%(title).180B [%(id)s].${audio}.%(ext)s`];
+      args.push(...formatArgs(choice, quality, audio));
+      args.push("--", link);
+      const job = createJob({ url: link, request: lastRequest.current, title: metadata?.title, duration: metadata?.duration, format: formatLabel(choice), quality: qualityLabel(choice, quality), audio, audioName: languages.tracks.find(track => track.value === audio)?.title, directory, started: Date.now() });
+      activeJob.current = job; setJobInfo(job.info);
+      // Fixed shell code; the paths, executable and every yt-dlp argument are
+      // positional parameters, never interpolated into shell code. The supervisor
+      // outlives this command, so progress is read from the job folder, not the promise.
+      const start = () => { void execa("/bin/sh", ["-c", downloadSupervisor, "tinycast-download", job.log, job.control, job.status, job.pid, bin.ytdlp, ...args], { env: environment(), timeout: 0 }).catch(() => {}); };
+      start();
+      let code = await watch(job);
+      // yt-dlp stops before downloading if it can't read browser cookies: retry once without them.
+      const note = code && code !== 130 && controlState(job) !== "stop" ? cookieFailure(readLog(job), prefs.cookiesFromBrowser) : undefined;
+      if (note) {
+        setCookieNote(`${note} Downloading without cookies.`);
+        args = withoutCookies(args); rmSync(job.status, { force: true }); rmSync(job.pid, { force: true });
+        start(); code = await watch(job);
       }
-      searchBarAccessory={
-        <Form.LinkAccessory
-          text="Supported Sites"
-          target="https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md"
-        />
-      }
-    >
-      <Form.Description title="Title" text={titlePlaceholder} />
-      <Form.TextField
-        {...itemProps.url}
-        autoFocus
-        title="URL"
-        placeholder="https://www.youtube.com/watch?v=ykaj0pS4A1A"
-      />
-      {warning && <Form.Description text={warning} />}
-      {video && (
-        <Form.Dropdown {...itemProps.format} title="Format">
-          {Object.entries(formats).map(([category, formats]) => (
-            <Form.Dropdown.Section title={category} key={category}>
-              {formats.map((format) => (
-                <Form.Dropdown.Item
-                  key={format.format_id}
-                  value={getFormatValue(format)}
-                  title={getFormatTitle(format)}
-                />
-              ))}
-            </Form.Dropdown.Section>
-          ))}
-        </Form.Dropdown>
-      )}
-      {hasPlaylist(values.url) && (
-        <Form.Checkbox
-          {...itemProps.downloadPlaylist}
-          title="Playlist"
-          label="Download entire playlist"
-          info="This URL is part of a playlist. Leave unchecked to download only the video shown above."
-        />
-      )}
-    </Form>
-  );
+      finish(job, code);
+    } catch (e) {
+      setProgress(previous => ({ percent: previous?.percent ?? null, phase: "error" }));
+      setError(details(e)); setStatus("Download failed. The error below explains why.");
+    } finally {
+      activeJob.current = null; setPaused(false); setStopping(false);
+      busy.current = false; setDownloading(false);
+    }
+  }
+
+  function newDownload() {
+    setProgress(null); setError(""); setJobInfo(null); setSavePath(""); setFiles([]);
+  }
+  const title = jobInfo?.title || metadata?.title || jobInfo?.url || url;
+  const link = jobInfo?.url || url.trim();
+  if (progress && (progress.phase === "complete" || progress.phase === "error" || progress.phase === "stopped")) return <FinishedDetail
+    kind={progress.phase} title={title} url={link} files={files} size={progress.total} directory={jobInfo?.directory || expand(prefs.downloadPath || "~/Downloads")}
+    savePath={savePath} finishedAt={finishedAt} error={error} decimal={decimal}
+    onNew={newDownload} onRetry={() => { const request = lastRequest.current; newDownload(); void download(request); }} />;
+  if (progress) {
+    return <DownloadingPanel title={title} url={link} progress={progress} paused={paused} stopping={stopping} savePath={savePath} decimal={decimal} color={accentColor(accent)}
+      note={cookieNote || undefined} closeWhenDone={closeWhenDone} onCloseWhenDone={value => { closeWhenDoneRef.current = value; setCloseWhenDone(value); }}
+      onPauseResume={() => controlDownload(paused ? "running" : "paused")} onCancel={() => controlDownload("stop")} />;
+  }
+
+  return <Form isLoading={loading || downloading} actions={<ActionPanel>
+    <Action.SubmitForm title={downloading ? "Downloading…" : "Download Video"} icon={Icon.Download} onSubmit={download} />
+    <Action title="Reload Video Details" icon={Icon.ArrowClockwise} shortcut={{ modifiers: ["cmd"], key: "r" }} onAction={() => { if (!busy.current) setRetry(v => v + 1); }} />
+    {files.length > 0 && <Action title="Show Download in Finder" icon={Icon.Finder} onAction={() => showInFinder(files[0])} />}
+    {error && <Action.CopyToClipboard title="Copy Error" content={error} />}
+    <Action title="Check Browser Cookies" icon={Icon.Lock} shortcut={{ modifiers: ["cmd", "shift"], key: "k" }} onAction={() => void checkBrowserCookies()} />
+    {(cookieCheck?.needsPermission || /Full Disk Access|data from other apps/.test(cookieNote)) && <Action title="Open Privacy Settings" icon={Icon.Gear} onAction={() => void execa("/usr/bin/open", [privacySettingsUrl]).catch(() => {})} />}
+    <Action title="Extension Preferences" onAction={openExtensionPreferences} />
+  </ActionPanel>}>
+    <Form.TextField id="url" title="Video URL" value={url} placeholder="https://www.youtube.com/watch?v=…" onChange={value => { if (!busy.current) { edited.current = true; setUrl(value); } }} />
+    <Form.Dropdown id="format" title="Format" value={format} onChange={setFormat}>
+      {formats.map(item => <Form.Dropdown.Item key={item.value} value={item.value} title={item.title} />)}
+    </Form.Dropdown>
+    {format === "mp4" && <Form.Dropdown id="resolution" title="Resolution" value={resolution} onChange={setResolution}>
+      {resolutions.map(item => <Form.Dropdown.Item key={item.value} value={item.value} title={item.title} />)}
+    </Form.Dropdown>}
+    {languages.tracks.length > 0 && <Form.Dropdown id="audio" title="Audio Language" value={audioLanguage} onChange={setAudioLanguage}>
+      <Form.Dropdown.Item value="original" title={languages.original ? `Original — ${languages.original}` : "Original"} />
+      {languages.tracks.map(track => <Form.Dropdown.Item key={track.value} value={track.value} title={`${track.title} (dubbed)`} />)}
+    </Form.Dropdown>}
+    <Form.Checkbox id="playlist" title="Playlist" label="Download the entire playlist" value={playlist} onChange={setPlaylist} />
+    <Form.Description title="Status" text={status} />
+    {(cookieCheck || cookieNote) && <Form.Description title="Cookies" text={cookieCheck?.message || cookieNote} />}
+    {metadata?.title && <Form.Description title="Video" text={metadata.title} />}
+    {error && <Form.Description title="Error" text={error.slice(-3000)} />}
+    {files.length > 0 && <Form.Description title="Saved file" text={files.join("\n")} />}
+  </Form>;
 }

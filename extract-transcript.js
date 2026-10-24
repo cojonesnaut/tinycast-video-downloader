@@ -62,7 +62,7 @@ function execa(file, args = [], options = {}) {
         failure.name = "ExecaError";
         failure.stdout = output;
         failure.stderr = errors;
-        failure.code = error.code;
+        failure.code = error.code ?? void 0;
         failure.exitCode = typeof error.code === "number" ? error.code : void 0;
         failure.shortMessage = error.message;
         reject(failure);
@@ -131,11 +131,12 @@ async function loadCaptionVideo(url, prefs) {
     }
   }
 }
+var entities = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
 function clean(text) {
   return text.replace(/<[^>]*>/g, "").replace(/\{\\[^}]*\}/g, "").replace(/&#(x[\da-f]+|\d+);/gi, (full, value) => {
     const n = value[0].toLowerCase() === "x" ? parseInt(value.slice(1), 16) : Number(value);
     return n >= 0 && n <= 1114111 ? String.fromCodePoint(n) : full;
-  }).replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_, entity) => ({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " })[entity] || "").replace(/\s+/g, " ").trim();
+  }).replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_, entity) => entities[entity] || "").replace(/\s+/g, " ").trim();
 }
 function parseSrt(source) {
   const cues = [];

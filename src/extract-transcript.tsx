@@ -2,7 +2,7 @@ import { Action, ActionPanel, Clipboard, Detail, Form, getPreferenceValues, open
 import { useEffect, useRef, useState } from "react";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { loadCaptionVideo, extractCaptions, transcriptText, markdownEscape, errorText, expand, validUrl, type CaptionVideo, type Cue, type TranscriptPreferences } from "./transcript-engine";
+import { loadCaptionVideo, extractCaptions, transcriptText, markdownEscape, errorText, expand, validUrl, type CaptionVideo, type Cue, type TranscriptPreferences } from "./transcript-engine.js";
 
 export default function ExtractTranscript() {
   const prefs = getPreferenceValues<TranscriptPreferences & { autoLoadUrlFromClipboard?: boolean }>();

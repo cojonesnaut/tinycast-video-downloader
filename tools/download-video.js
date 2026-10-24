@@ -53,7 +53,7 @@ function execa(file, args = [], options = {}) {
         failure.name = "ExecaError";
         failure.stdout = output;
         failure.stderr = errors;
-        failure.code = error.code;
+        failure.code = error.code ?? void 0;
         failure.exitCode = typeof error.code === "number" ? error.code : void 0;
         failure.shortMessage = error.message;
         reject(failure);

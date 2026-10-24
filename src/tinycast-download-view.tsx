@@ -1,7 +1,7 @@
 import { Action, ActionPanel, Detail, Icon, closeMainWindow, environment } from "@raycast/api";
 import path from "node:path";
-import { bytes, timeLeft, type Progress } from "./tinycast-progress";
-import { finishedAt, finishedPanel, progressPanel } from "./tinycast-panel";
+import { bytes, timeLeft, type Progress } from "./tinycast-progress.js";
+import { finishedAt, finishedPanel, progressPanel } from "./tinycast-panel.js";
 
 // The download window: a details panel while downloading and a "Download completed"
 // screen afterwards. Each is drawn as one transparent image in a

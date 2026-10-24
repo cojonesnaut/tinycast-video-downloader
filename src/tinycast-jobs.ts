@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { execa } from "./tinycast-execa";
+import { execa } from "./tinycast-execa.js";
 
 // Downloads keep running if the command is closed. Every download is a job folder
 // under one shared root, so a reopened command can reattach to it and the same

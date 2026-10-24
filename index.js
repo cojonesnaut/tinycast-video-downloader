@@ -27,12 +27,12 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// src/tinycast.tsx
-var tinycast_exports = {};
-__export(tinycast_exports, {
+// src/index.tsx
+var src_exports = {};
+__export(src_exports, {
   default: () => TinycastDownloader
 });
-module.exports = __toCommonJS(tinycast_exports);
+module.exports = __toCommonJS(src_exports);
 var import_api2 = require("@raycast/api");
 var import_react = require("react");
 var import_node_fs2 = require("node:fs");
@@ -58,7 +58,7 @@ function execa(file, args = [], options = {}) {
         failure.name = "ExecaError";
         failure.stdout = output;
         failure.stderr = errors;
-        failure.code = error.code;
+        failure.code = error.code ?? void 0;
         failure.exitCode = typeof error.code === "number" ? error.code : void 0;
         failure.shortMessage = error.message;
         reject(failure);
@@ -497,7 +497,7 @@ function FinishedDetail(p) {
   );
 }
 
-// src/tinycast.tsx
+// src/index.tsx
 var import_jsx_runtime2 = require("react/jsx-runtime");
 var prefs = (0, import_api2.getPreferenceValues)();
 var expand = (value) => value.replace(/^~(?=\/|$)/, (0, import_node_os2.homedir)());

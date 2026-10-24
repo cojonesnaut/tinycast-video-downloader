@@ -24,7 +24,7 @@ export function execa(
         failure.name = "ExecaError";
         failure.stdout = output;
         failure.stderr = errors;
-        failure.code = error.code;
+        failure.code = error.code ?? undefined;
         failure.exitCode = typeof error.code === "number" ? error.code : undefined;
         failure.shortMessage = error.message;
         reject(failure);

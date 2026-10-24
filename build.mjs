@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 process.chdir(fileURLToPath(new URL(".", import.meta.url)));
 const manifest = JSON.parse(await readFile("package.json", "utf8"));
 const entryPoints = Object.fromEntries([
-  ...manifest.commands.map(({ name }) => [name, name === "index" ? "src/tinycast.tsx" : `src/${name}.tsx`]),
+  ...manifest.commands.map(({ name }) => [name, `src/${name}.tsx`]),
   ...(manifest.tools ?? []).map(({ name }) => [`tools/${name}`, `src/tools/${name}.ts`]),
 ]);
 await build({
