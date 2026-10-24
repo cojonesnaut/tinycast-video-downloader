@@ -7,7 +7,7 @@ import { execa } from "./tinycast-execa";
 // under one shared root, so a reopened command can reattach to it and the same
 // video is never downloaded twice at once (two yt-dlp runs would share .part files).
 const root = path.join(tmpdir(), "tinycast-video-downloader");
-export type JobInfo = { url: string; title?: string; duration?: number; thumbnail?: string; format?: string; quality?: string; audio?: string; audioName?: string; directory: string; started: number };
+export type JobInfo = { url: string; request?: Record<string, unknown>; title?: string; duration?: number; format?: string; quality?: string; audio?: string; audioName?: string; directory: string; started: number };
 export type Job = { dir: string; log: string; control: string; status: string; pid: string; info: JobInfo };
 
 function paths(dir: string, info: JobInfo): Job {

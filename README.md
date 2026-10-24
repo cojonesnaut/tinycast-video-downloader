@@ -2,9 +2,7 @@
 
 # Video Downloader for Tinycast
 
-Download videos from YouTube, 𝕏, Twitch, Instagram, Bilibili and [everything else yt-dlp supports](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md), right from [Tinycast](https://tinycast.dev) on macOS. Progress looks like a Downie download row.
-
-![Download progress in Tinycast](metadata/tinycast-download-card.png)
+Download videos from YouTube, 𝕏, Twitch, Instagram, Bilibili and [everything else yt-dlp supports](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md), right from [Tinycast](https://tinycast.dev) on macOS. While a download runs, it shows a details panel: URL, status, size, speed, time left, save location and a progress bar.
 
 ## Features
 

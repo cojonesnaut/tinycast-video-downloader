@@ -1,19 +1,20 @@
-import { Action, ActionPanel, Clipboard, Grid, Form, Icon, environment as host, getPreferenceValues, showInFinder, openExtensionPreferences } from "@raycast/api";
+import { Action, ActionPanel, Clipboard, Form, Icon, closeMainWindow, getPreferenceValues, showInFinder, openExtensionPreferences } from "@raycast/api";
 import { useEffect, useRef, useState } from "react";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { execa } from "./tinycast-execa";
 
-import { loadThumbnail } from "./tinycast-thumbnail";
 import { downloadSupervisor } from "./download-control";
 import { controlState, createJob, exitCode, isAlive, readLog, runningJobs, signal, updateJob, type Job, type JobInfo } from "./tinycast-jobs";
 import { audioTracks, formatArgs, formatLabel, formats, qualityLabel, resolutions, validLanguage } from "./tinycast-formats";
 import { cookieFailure, describeCookieCheck, privacySettingsUrl, withoutCookies, type CookieCheck } from "./tinycast-cookies";
-import { decimalSeparator, parseProgress, progressCard, type Progress } from "./tinycast-progress";
+import { decimalSeparator, parseProgress, plannedFile, printedTitle, type Progress } from "./tinycast-progress";
+import { DownloadingPanel, FinishedDetail } from "./tinycast-download-view";
+import { accentColor } from "./tinycast-panel";
 
 type Preferences = { downloadPath?: string; ytdlPath?: string; ffmpegPath?: string; ffprobePath?: string; forceIpv4?: boolean; cookiesFromBrowser?: string; autoLoadUrlFromClipboard?: boolean };
-type Metadata = { title?: string; duration?: number; live_status?: string; thumbnail?: string; formats?: Parameters<typeof audioTracks>[0] };
+type Metadata = { title?: string; duration?: number; live_status?: string; formats?: Parameters<typeof audioTracks>[0] };
 const prefs = getPreferenceValues<Preferences>();
 const expand = (value: string) => value.replace(/^~(?=\/|$)/, homedir());
 function executable(name: string, preference?: string) {
@@ -56,14 +57,19 @@ export default function TinycastDownloader() {
   const [cookieNote, setCookieNote] = useState("");
   const [cookieCheck, setCookieCheck] = useState<CookieCheck | null>(null);
   const [files, setFiles] = useState<string[]>([]);
-  const [thumbnail, setThumbnail] = useState<string | undefined>();
   const [progress, setProgress] = useState<Progress | null>(null);
   const [retry, setRetry] = useState(0);
   const [paused, setPaused] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [jobInfo, setJobInfo] = useState<JobInfo | null>(null);
-  const [videoSize, setVideoSize] = useState("");
-  const [look, setLook] = useState<{ accent?: string; decimal?: string }>({});
+  const [decimal, setDecimal] = useState(".");
+  const [accent, setAccent] = useState<string | undefined>();
+  const [savePath, setSavePath] = useState("");
+  const [finishedAt, setFinishedAt] = useState(new Date());
+  const [closeWhenDone, setCloseWhenDone] = useState(false);
+  // Read when the download ends, which happens inside an async callback.
+  const closeWhenDoneRef = useRef(false);
+  const lastRequest = useRef<Record<string, unknown>>({});
   // Original, dubbed and auto-dubbed audio tracks of the looked-up video.
   const languages = audioTracks(metadata?.formats);
   useEffect(() => {
@@ -74,13 +80,11 @@ export default function TinycastDownloader() {
   const edited = useRef(false);
   const lookupVersion = useRef(0);
 
-  // Downie colours its bar with the macOS accent colour and formats numbers for the
-  // user's region; read both once. Unset accent (multicolour) falls back to blue.
+  // Numbers follow the user's region ("20,7 MB" where a decimal comma is used), and the
+  // bar the macOS accent colour. Unset accent means blue.
   useEffect(() => {
-    void Promise.all([
-      execa("/usr/bin/defaults", ["read", "-g", "AppleAccentColor"]).then(r => r.stdout.trim(), () => undefined),
-      execa("/usr/bin/defaults", ["read", "-g", "AppleLocale"]).then(r => decimalSeparator(r.stdout.trim()), () => undefined),
-    ]).then(([accent, decimal]) => setLook({ accent, decimal }));
+    void execa("/usr/bin/defaults", ["read", "-g", "AppleLocale"]).then(r => setDecimal(decimalSeparator(r.stdout.trim())), () => {});
+    void execa("/usr/bin/defaults", ["read", "-g", "AppleAccentColor"]).then(r => setAccent(r.stdout.trim()), () => {});
   }, []);
 
   useEffect(() => {
@@ -93,7 +97,7 @@ export default function TinycastDownloader() {
     if (downloading) return;
     let cancelled = false;
     const version = ++lookupVersion.current;
-    setMetadata(null); setThumbnail(undefined); setError(""); setFiles([]); setCookieNote("");
+    setMetadata(null); setError(""); setFiles([]); setCookieNote("");
     if (!url.trim()) { setLoading(false); setStatus("Paste a video URL. Press Return to download."); return; }
     if (!valid(url)) { setLoading(false); setStatus("Enter a complete http:// or https:// video URL."); return; }
     setLoading(true); setStatus("Loading video details… You can also press Return to download now.");
@@ -109,12 +113,7 @@ export default function TinycastDownloader() {
           return execa(ytdlp, withoutCookies(lookupArgs), { env: environment(), timeout: 90000 });
         });
         const info = JSON.parse(result.stdout) as Metadata;
-        if (!cancelled && version === lookupVersion.current) { setMetadata(info); if (!busy.current) setStatus("Ready. Choose a format and press Return to download.");
-          if (info.thumbnail?.startsWith("https://")) {
-            void loadThumbnail(info.thumbnail, tools().ffmpeg, host?.appearance).then(image => {
-              if (!cancelled && version === lookupVersion.current) setThumbnail(image);
-            }).catch(() => {});
-          } }
+        if (!cancelled && version === lookupVersion.current) { setMetadata(info); if (!busy.current) setStatus("Ready. Choose a format and press Return to download."); }
       } catch (e) {
         if (!cancelled && version === lookupVersion.current && !busy.current) { setError(details(e)); setStatus("Video lookup failed. See the error below, retry, or try Download."); }
       } finally { if (!cancelled && version === lookupVersion.current) setLoading(false); }
@@ -125,7 +124,7 @@ export default function TinycastDownloader() {
   useEffect(() => {
     const job = activeJob.current;
     if (!job || !metadata?.title || job.info.title || job.info.url !== url.trim()) return;
-    updateJob(job, { title: metadata.title, duration: metadata.duration, thumbnail: metadata.thumbnail });
+    updateJob(job, { title: metadata.title, duration: metadata.duration });
     setJobInfo(job.info);
   }, [metadata]);
 
@@ -168,8 +167,7 @@ export default function TinycastDownloader() {
   // when the supervisor disappeared and the result has to be read from the log.
   function watch(job: Job) {
     return new Promise<number | undefined>(resolve => {
-      // Tinycast re-decodes the whole card SVG on every update (~50 ms), so redraw it
-      // at most once a second; phase changes (paused, processing…) show at once.
+      // Update the view at most once a second; phase changes (paused, processing…) show at once.
       let last = "", shownAt = 0, shownPhase = "", ticks = 0, checking = false, deadSince = 0;
       const timer = setInterval(async () => {
         const state = controlState(job);
@@ -178,7 +176,10 @@ export default function TinycastDownloader() {
           const next = parseProgress(readLog(job));
           if (next && JSON.stringify(next) !== last && (next.phase !== shownPhase || Date.now() - shownAt >= 1000)) {
             last = JSON.stringify(next); shownAt = Date.now(); shownPhase = next.phase; setProgress(next);
-            if (next.resolution && /^\d+x\d+$/.test(next.resolution)) setVideoSize(next.resolution);
+            const log = readLog(job), planned = plannedFile(log), title = job.info.title ? undefined : printedTitle(log);
+            if (title) { updateJob(job, { title }); setJobInfo({ ...job.info }); }
+            // yt-dlp names the file before remuxing/converting; show the final extension.
+            if (planned) setSavePath(job.info.format === "MP4" ? planned.replace(/\.[^./]+$/, ".mp4") : job.info.format === "MP3" ? planned.replace(/\.[^./]+$/, ".mp3") : planned);
             setStatus(next.phase === "processing" ? "Finishing the file…" : "Downloading… You can close this command and reopen it to see progress.");
           }
         }
@@ -197,6 +198,7 @@ export default function TinycastDownloader() {
 
   function finish(job: Job, code: number | undefined) {
     const log = readLog(job);
+    setFinishedAt(new Date());
     const saved = log.split(/\r?\n/).flatMap(line => {
       try { const file = JSON.parse(line); return typeof file === "string" && existsSync(file) ? [file] : []; } catch { return []; }
     });
@@ -206,6 +208,7 @@ export default function TinycastDownloader() {
     } else if ((code === 0 || code === undefined) && saved.length) {
       setProgress({ phase: "complete", percent: 100, total: saved.reduce((sum, file) => { try { return sum + statSync(file).size; } catch { return sum; } }, 0) });
       setFiles(saved); setStatus(`Saved ${saved.length} file${saved.length === 1 ? "" : "s"} to ${job.info.directory}`);
+      if (closeWhenDoneRef.current) void closeMainWindow();
     } else {
       setProgress(previous => ({ percent: previous?.percent ?? null, phase: "error" }));
       setError(log || "yt-dlp finished but did not report a saved file."); setStatus("Download failed. The error below explains why.");
@@ -214,10 +217,9 @@ export default function TinycastDownloader() {
 
   // Show a download that is already running (started earlier or from another window).
   async function follow(job: Job, message: string) {
-    busy.current = true; activeJob.current = job; setJobInfo(job.info);
-    setLoading(false); setDownloading(true); setError(""); setFiles([]); setStopping(false);
+    busy.current = true; activeJob.current = job; setJobInfo(job.info); lastRequest.current = job.info.request ?? { url: job.info.url };
+    setLoading(false); setDownloading(true); setError(""); setFiles([]); setStopping(false); setSavePath("");
     setProgress({ phase: "starting", percent: null }); setStatus(message);
-    if (job.info.thumbnail?.startsWith("https://")) void loadThumbnail(job.info.thumbnail, tools().ffmpeg, host?.appearance).then(setThumbnail).catch(() => {});
     try { finish(job, await watch(job)); }
     finally { activeJob.current = null; setPaused(false); setStopping(false); busy.current = false; setDownloading(false); }
   }
@@ -232,7 +234,8 @@ export default function TinycastDownloader() {
     if (busy.current) return;
     const link = String(values.url ?? url).trim();
     if (!valid(link)) { setError("Enter a complete http:// or https:// video URL."); return; }
-    busy.current = true; setPaused(false); setStopping(false); setLoading(false); setDownloading(true); setError(""); setFiles([]);
+    busy.current = true; setPaused(false); setStopping(false); setLoading(false); setDownloading(true); setError(""); setFiles([]); setSavePath("");
+    lastRequest.current = { ...values, url: link };
     setProgress({ phase: "starting", percent: null });
     setStatus("Preparing download…");
     try {
@@ -247,10 +250,10 @@ export default function TinycastDownloader() {
       mkdirSync(directory, { recursive: true });
       const choice = String(values.format || format || "mp4");
       const quality = String(values.resolution || resolution || "highest");
-      let args = [...common(), values.playlist ?? playlist ? "--yes-playlist" : "--no-playlist", "--ffmpeg-location", path.dirname(bin.ffmpeg), "--newline", "--progress", "--progress-delta", "0.25", "--progress-template", "download:TINYCAST_PROGRESS:%(progress._percent_str)s|%(info.format_id)s|%(info.playlist_index)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(info.resolution)s|%(info.vcodec)s|%(info.ext)s", "--progress-template", "postprocess:TINYCAST_PROCESSING:%(progress.status)s", "--print", "video:TINYCAST_FORMATS:%(requested_formats.:.{format_id,filesize,filesize_approx})j", "--print", "after_move:%(filepath)j", "--no-simulate", "-P", directory, "-o", audio === "original" ? "%(title).180B [%(id)s].%(ext)s" : `%(title).180B [%(id)s].${audio}.%(ext)s`];
+      let args = [...common(), values.playlist ?? playlist ? "--yes-playlist" : "--no-playlist", "--ffmpeg-location", path.dirname(bin.ffmpeg), "--newline", "--progress", "--progress-delta", "0.25", "--progress-template", "download:TINYCAST_PROGRESS:%(progress._percent_str)s|%(info.format_id)s|%(info.playlist_index)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(info.resolution)s|%(info.vcodec)s|%(info.ext)s", "--progress-template", "postprocess:TINYCAST_PROCESSING:%(progress.status)s", "--print", "video:TINYCAST_FORMATS:%(requested_formats.:.{format_id,filesize,filesize_approx})j", "--print", "video:TINYCAST_FILE:%(filename)j", "--print", "video:TINYCAST_TITLE:%(title)j", "--print", "after_move:%(filepath)j", "--no-simulate", "-P", directory, "-o", audio === "original" ? "%(title).180B [%(id)s].%(ext)s" : `%(title).180B [%(id)s].${audio}.%(ext)s`];
       args.push(...formatArgs(choice, quality, audio));
       args.push("--", link);
-      const job = createJob({ url: link, title: metadata?.title, duration: metadata?.duration, thumbnail: metadata?.thumbnail, format: formatLabel(choice), quality: qualityLabel(choice, quality), audio, audioName: languages.tracks.find(track => track.value === audio)?.title, directory, started: Date.now() });
+      const job = createJob({ url: link, request: lastRequest.current, title: metadata?.title, duration: metadata?.duration, format: formatLabel(choice), quality: qualityLabel(choice, quality), audio, audioName: languages.tracks.find(track => track.value === audio)?.title, directory, started: Date.now() });
       activeJob.current = job; setJobInfo(job.info);
       // Fixed shell code; the paths, executable and every yt-dlp argument are
       // positional parameters, never interpolated into shell code. The supervisor
@@ -275,25 +278,20 @@ export default function TinycastDownloader() {
     }
   }
 
-  if (progress) return <Grid columns={1} aspectRatio={"720/108" as Grid.AspectRatio} inset={Grid.Inset.Zero} fit={Grid.Fit.Contain} filtering={false} selectedItemId="active-download">
-    <Grid.Item
-      id="active-download"
-      content={{ source: progressCard(stopping ? { ...progress, phase: "stopping" } : paused ? { ...progress, phase: "paused" } : progress, jobInfo?.title || metadata?.title || jobInfo?.url || url, error || status, {
-        source: (() => { try { return new URL(jobInfo?.url || url).hostname; } catch { return ""; } })(),
-        format: (jobInfo?.format ?? formatLabel(format)) === "Original" ? progress.extension?.toUpperCase() || "Original" : jobInfo?.format ?? formatLabel(format),
-        resolution: videoSize || jobInfo?.quality || qualityLabel(format, resolution), audio: jobInfo?.audioName,
-        thumbnail, appearance: host?.appearance, accent: look.accent, decimal: look.decimal,
-      }) }}
-      subtitle={error ? "Download failed — use Copy Error in Actions for details." : `${status}${cookieNote ? " · Browser cookies unavailable — see Cookies in the form" : ""}`}
-      actions={<ActionPanel>
-        {downloading && !stopping && <Action title={paused ? "Resume Download" : "Pause Download"} icon={paused ? Icon.Play : Icon.Pause} shortcut={{ modifiers: ["cmd"], key: "p" }} onAction={() => controlDownload(paused ? "running" : "paused")} />}
-        {downloading && !stopping && <Action title="Stop Download" icon={Icon.Stop} shortcut={{ modifiers: ["cmd"], key: "." }} onAction={() => controlDownload("stop")} />}
-        {!downloading && <Action title="New Download" icon={Icon.ArrowClockwise} onAction={() => { setProgress(null); setError(""); setJobInfo(null); setVideoSize(""); }} />}
-        {files.length > 0 && <Action title="Show Download in Finder" icon={Icon.Finder} onAction={() => showInFinder(files[0])} />}
-        {error && <Action.CopyToClipboard title="Copy Error" content={error} />}
-      </ActionPanel>}
-    />
-  </Grid>;
+  function newDownload() {
+    setProgress(null); setError(""); setJobInfo(null); setSavePath(""); setFiles([]);
+  }
+  const title = jobInfo?.title || metadata?.title || jobInfo?.url || url;
+  const link = jobInfo?.url || url.trim();
+  if (progress && (progress.phase === "complete" || progress.phase === "error" || progress.phase === "stopped")) return <FinishedDetail
+    kind={progress.phase} title={title} url={link} files={files} size={progress.total} directory={jobInfo?.directory || expand(prefs.downloadPath || "~/Downloads")}
+    savePath={savePath} finishedAt={finishedAt} error={error} decimal={decimal}
+    onNew={newDownload} onRetry={() => { const request = lastRequest.current; newDownload(); void download(request); }} />;
+  if (progress) {
+    return <DownloadingPanel title={title} url={link} progress={progress} paused={paused} stopping={stopping} savePath={savePath} decimal={decimal} color={accentColor(accent)}
+      note={cookieNote || undefined} closeWhenDone={closeWhenDone} onCloseWhenDone={value => { closeWhenDoneRef.current = value; setCloseWhenDone(value); }}
+      onPauseResume={() => controlDownload(paused ? "running" : "paused")} onCancel={() => controlDownload("stop")} />;
+  }
 
   return <Form isLoading={loading || downloading} actions={<ActionPanel>
     <Action.SubmitForm title={downloading ? "Downloading…" : "Download Video"} icon={Icon.Download} onSubmit={download} />
